@@ -1,6 +1,6 @@
 <?php
 // index.php
-require_once 'config.php'; // 引入資料庫連接設定
+require_once 'config.php'; // 資料庫連接設定
 
 // 初始化變數
 $building_filter = '';
@@ -8,11 +8,12 @@ $budget_filter = '';
 $empty_dormitories = [];
 $message = '';
 
+// 接收get請求後執行
 if ($_SERVER['REQUEST_METHOD'] == 'GET' && isset($_GET['search_empty_rooms'])) {
-    $building_filter = $_GET['building'] ?? '';
+    $building_filter = $_GET['building'] ?? ''; // 抓出user填的building和budget，無則空字串
     $budget_filter = $_GET['budget'] ?? '';
 
-    // 計算每個宿舍已分配的床位數
+    // 計算每間房間(dorm_ID, building)已分配的床位數
     $sql_assigned_beds = "
         SELECT dorm_ID, building, COUNT(stu_ID) AS assigned_beds
         FROM assignment
@@ -32,18 +33,17 @@ if ($_SERVER['REQUEST_METHOD'] == 'GET' && isset($_GET['search_empty_rooms'])) {
         LEFT JOIN
             ({$sql_assigned_beds}) a ON d.dorm_ID = a.dorm_ID AND d.building = a.building
         WHERE
-            (d.capacity - IFNULL(a.assigned_beds, 0)) > 0 -- 只顯示有空床位的宿舍
+            (d.capacity - IFNULL(a.assigned_beds, 0)) > 0 # 只顯示有空床位的宿舍，可能會有NULL所以用iffull判斷
     ";
 
     $params = [];
     $conditions = [];
 
-    if (!empty($building_filter)) {
+    if (!empty($building_filter)) { // 依棟別篩選
         $conditions[] = "d.building LIKE :building_filter";
         $params[':building_filter'] = '%' . $building_filter . '%'; // 模糊搜尋
     }
-    if (!empty($budget_filter)) {
-        // 假設預算篩選是基於宿舍價格
+    if (!empty($budget_filter)) { // 依預算篩選
         $conditions[] = "d.price <= :budget_filter";
         $params[':budget_filter'] = $budget_filter;
     }
@@ -67,11 +67,11 @@ if ($_SERVER['REQUEST_METHOD'] == 'GET' && isset($_GET['search_empty_rooms'])) {
 ?>
 
 <!DOCTYPE html>
-<html lang="zh-Hant">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>學生宿舍系統 - 搜尋空房</title>
+    <title>Student Dormitory System - Search Empty Rooms</title>
     <style>
         body { font-family: Arial, sans-serif; margin: 0; padding: 0; background-color: #f4f4f4; }
         .container { display: flex; width: 100%; max-width: 1200px; margin: 20px auto; background-color: #fff; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
@@ -181,7 +181,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'GET' && isset($_GET['search_empty_rooms'])) {
                     </tbody>
                 </table>
             <?php elseif (isset($_GET['search_empty_rooms']) && empty($empty_dormitories) && empty($message)): ?>
-                <p class="message">沒有找到符合條件的空宿舍。</p>
+                <p class="message">No empty dormitories found matching the criteria.</p>
             <?php endif; ?>
 
         </div>
