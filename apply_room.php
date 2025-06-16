@@ -2,111 +2,224 @@
 // apply_room.php
 require_once 'config.php'; // 引入資料庫連接設定
 
+// 從資料庫抓出所有不同的 building（棟別）
+$buildingStmt = $pdo->query("SELECT DISTINCT building
+                             FROM dormitory
+                             ORDER BY building");
+$buildings = $buildingStmt->fetchAll(PDO::FETCH_COLUMN);
+
 $message = '';
 
-if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['apply_room'])) {
-    $dorm_id_input = $_POST['dorm_id'] ?? '';
+if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+
+    //讀取學生輸入資訊
+    $dorm_id_input = $_POST['dorm_ID'] ?? '';
     $building_input = $_POST['building'] ?? '';
-    $student_id_input = $_POST['stu_id'] ?? '';
+    $student_id_input = $_POST['stu_ID'] ?? '';
     $student_name_input = $_POST['name'] ?? '';
-    $student_gender_input = $_POST['gender'] ?? ''; // 新增性別
-    $student_department_input = $_POST['department'] ?? ''; // 新增系所
-    $student_grade_input = $_POST['grade'] ?? ''; // 新增年級
-    $student_budget_input = $_POST['budget'] ?? ''; // 新增預算
 
 
     // 簡單的輸入驗證
-    if (empty($dorm_id_input) || empty($building_input) || empty($student_id_input) || empty($student_name_input) || empty($student_gender_input)) {
-        $message = "請填寫所有必填欄位 (宿舍ID, 樓棟, 學號, 姓名, 性別)。";
+    if (empty($dorm_id_input) || empty($building_input) || empty($student_id_input) || empty($student_name_input)) {
+        $message = "請填寫所有必填欄位 (宿舍ID, 樓棟, 學號, 姓名)。";
     } else {
         try {
-            $pdo->beginTransaction(); // 開始事務
+            // 先檢查 dormitory 是否存在
+            $sql = "SELECT *
+                    FROM dormitory
+                    WHERE dorm_ID = :dorm_ID AND building = :building";
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute([
+                ':dorm_ID' => $dorm_id_input,
+                ':building' => $building_input
+            ]);
 
-            // 1. 檢查學生是否已經存在
-            $stmt = $pdo->prepare("SELECT stu_ID FROM student WHERE stu_ID = :stu_id");
-            $stmt->execute([':stu_id' => $student_id_input]);
-            $existing_student = $stmt->fetch();
-
-            if (!$existing_student) {
-                // 如果學生不存在，則插入新學生記錄
-                $stmt = $pdo->prepare("INSERT INTO student (stu_ID, name, gender, department, grade, budget) VALUES (:stu_id, :name, :gender, :department, :grade, :budget)");
-                $stmt->execute([
-                    ':stu_id' => $student_id_input,
-                    ':name' => $student_name_input,
-                    ':gender' => $student_gender_input,
-                    ':department' => $student_department_input,
-                    ':grade' => $student_grade_input,
-                    ':budget' => $student_budget_input
-                ]);
-            } else {
-                // 如果學生存在，檢查是否已分配宿舍
-                $stmt = $pdo->prepare("SELECT COUNT(*) FROM assignment WHERE stu_ID = :stu_id");
-                $stmt->execute([':stu_id' => $student_id_input]);
-                if ($stmt->fetchColumn() > 0) {
-                    $message = "此學生已分配宿舍。";
-                    $pdo->rollBack();
-                    return;
-                }
-                // 學生存在但未分配宿舍，可以繼續分配
-            }
-
-            // 2. 查找宿舍資訊並檢查是否有空床位
-            $stmt = $pdo->prepare("SELECT dorm_ID, building, capacity, price FROM dormitory WHERE dorm_ID = :dorm_id AND building = :building_name");
-            $stmt->execute([':dorm_id' => $dorm_id_input, ':building_name' => $building_input]);
+            $stmt->execute();
             $dormitory = $stmt->fetch();
 
             if (!$dormitory) {
-                $message = "找不到指定的宿舍。";
-                $pdo->rollBack();
-                return;
-            }
+                $message = "找不到指定的宿舍，請確認 Dorm ID 與 Building 是否正確。";
+                echo "<script>
+                            alert('找不到指定的宿舍，請確認 Dorm ID 與 Building 是否正確。');
+                            window.location.href = 'apply_room.php';
+                    </script>";
+            } else {
+                //檢查學生是否存在
+                $stmt = $pdo->prepare("SELECT *
+                                       FROM student
+                                       WHERE stu_ID = :stu_ID AND name = :name");
+                $stmt->execute([
+                    ':stu_ID' => $student_id_input,
+                    ':name' => $student_name_input
+                ]);
+                $existing_student = $stmt->fetch();
 
-            // 獲取該宿舍已分配的床位號
-            $stmt = $pdo->prepare("SELECT bed_number FROM assignment WHERE dorm_ID = :dorm_id AND building = :building_name ORDER BY bed_number ASC");
-            $stmt->execute([':dorm_id' => $dorm_id_input, ':building_name' => $building_input]);
-            $assigned_beds = $stmt->fetchAll(PDO::FETCH_COLUMN);
-
-            $next_bed_number = 1;
-            for ($i = 1; $i <= $dormitory['capacity']; $i++) {
-                if (!in_array($i, $assigned_beds)) {
-                    $next_bed_number = $i;
-                    break;
+                if (!$existing_student) {
+                    $message = "找不到學生資料，請確認 Student ID 與 Name 是否正確。";
+                    echo "<script>
+                                alert('找不到學生資料，請確認 Student ID 與 Name 是否正確。');
+                                window.location.href = 'apply_room.php';
+                        </script>";
                 }
-                $next_bed_number++; // 如果找到的是已分配的床位，繼續找下一個
+                // 從資料表中取出 budget 值
+                $student_budget_input = $existing_student['budget'];
+                // 預算檢查
+                if ($dormitory['price'] > $student_budget_input && !isset($_POST['confirm_overbudget'])) {
+                    echo "<form id='overBudgetForm' method='POST' action='apply_room.php'>";
+                    echo "<input type='hidden' name='stu_ID' value='" . htmlspecialchars($student_id_input) . "'>";
+                    echo "<input type='hidden' name='name' value='" . htmlspecialchars($student_name_input) . "'>";
+                    echo "<input type='hidden' name='budget' value='" . htmlspecialchars($student_budget_input) . "'>";
+                    echo "<input type='hidden' name='building' value='" . htmlspecialchars($building_input) . "'>";
+                    echo "<input type='hidden' name='dorm_ID' value='" . htmlspecialchars($dorm_id_input) . "'>";
+                    echo "<input type='hidden' name='confirm_overbudget' value='1'>";
+                    echo "</form>";
+
+                    echo "<script>
+                        if (confirm('此房間價格 ({$dormitory['price']} 元) 超出學生預算（{$student_budget_input} 元），是否仍要申請？')) {
+                            document.getElementById('overBudgetForm').submit();
+                        } else {
+                            alert('已取消申請，返回申請頁面');
+                            window.location.href = 'apply_room.php';
+                        }
+                    </script>";
+                    exit;
+                }
+
+                $pdo->beginTransaction(); // 開始事務
+
+                if (!$existing_student) {
+                    $message = "找不到學生資料，請確認 Student ID 與 Name 是否正確。";
+                    echo "<script>
+                                alert('找不到學生資料，請確認 Student ID 與 Name 是否正確。');
+                                window.location.href = 'apply_room.php';
+                        </script>";
+                } else {
+                    if (isset($_POST['confirm_reassign'])) {
+                        // 若為重新分配，先刪除原有assignment
+                        $stmt = $pdo->prepare("DELETE FROM assignment WHERE stu_ID = :stu_ID");
+                        $stmt->execute([':stu_ID' => $student_id_input]);
+                    }
+
+                    //檢查是否已分配宿舍
+                    $stmt = $pdo->prepare("SELECT COUNT(*)
+                                           FROM assignment
+                                           WHERE stu_ID = :stu_ID");
+                    $stmt->execute([':stu_ID' => $student_id_input]);
+                    if ($stmt->fetchColumn() > 0 && !isset($_POST['confirm_reassign'])) {
+                        if ($pdo->inTransaction()) {
+                            $pdo->rollBack();
+                        }
+                        echo "<form id='confirmReassignForm' method='POST' action='apply_room.php'>";
+                        echo "<input type='hidden' name='stu_ID' value='" . htmlspecialchars($student_id_input) . "'>";
+                        echo "<input type='hidden' name='name' value='" . htmlspecialchars($student_name_input) . "'>";
+                        echo "<input type='hidden' name='budget' value='" . htmlspecialchars($student_budget_input) . "'>";
+                        echo "<input type='hidden' name='building' value='" . htmlspecialchars($building_input) . "'>";
+                        echo "<input type='hidden' name='dorm_ID' value='" . htmlspecialchars($dorm_id_input) . "'>";
+                        echo "<input type='hidden' name='confirm_reassign' value='1'>";
+                        echo "<input type='hidden' name='confirm_overbudget' value='1'>";
+                        echo "</form>";
+
+                        echo "<script>
+                            if (confirm('此學生已經分配過房間，是否要重新分配？')) {
+                                document.getElementById('confirmReassignForm').submit();
+                            } else {
+                                alert('已取消申請，返回宿舍申請頁面');
+                                window.location.href = 'apply_room.php';
+                            }
+                        </script>";
+                        exit;
+                    }
+                }
+
+                //查找宿舍資訊並檢查是否有空床位
+                $stmt = $pdo->prepare("SELECT dorm_ID, building, capacity, price
+                                       FROM dormitory
+                                       WHERE dorm_ID = :dorm_ID AND building = :building_name");
+                $stmt->execute([':dorm_ID' => $dorm_id_input, ':building_name' => $building_input]);
+                $dormitory = $stmt->fetch();
+
+                if (!$dormitory) {
+                    $message = "找不到指定的宿舍。";
+                    $pdo->rollBack();
+                }
+                //判斷學生性別
+                $stmt = $pdo->prepare("SELECT gender
+                                       FROM student
+                                       WHERE stu_ID = :stu_ID AND name = :name");
+                $stmt->execute([
+                    ':stu_ID' => $_POST['stu_ID'],
+                    ':name' => $_POST['name']
+                ]);
+                $studentGender = $stmt->fetchColumn();
+                // 判斷宿舍性別限制
+                $stmt = $pdo->prepare("SELECT gender
+                                       FROM dormitory
+                                       WHERE building = :building LIMIT 1");
+                $stmt->execute([
+                    ':building' => $_POST['building']
+                ]);
+                $buildingGender = $stmt->fetchColumn();
+                //判斷性別是否符合
+                if ($studentGender !== $buildingGender) {
+                    echo "<script>
+                        alert('所選棟別的性別與學生性別不符，請重新選擇。');
+                        window.location.href = 'apply_room.php';
+                    </script>";
+                    exit;
+                }
+
+                // 獲取該宿舍已分配的床位號
+                $stmt = $pdo->prepare("SELECT bed_number
+                                       FROM assignment
+                                       WHERE dorm_ID = :dorm_ID AND building = :building_name
+                                       ORDER BY bed_number ASC");
+                $stmt->execute([':dorm_ID' => $dorm_id_input, ':building_name' => $building_input]);
+                $assigned_beds = $stmt->fetchAll(PDO::FETCH_COLUMN);
+
+                $next_bed_number = 1;
+                for ($i = 1; $i <= $dormitory['capacity']; $i++) {
+                    if (!in_array($i, $assigned_beds)) {
+                        $next_bed_number = $i;
+                        break;
+                    }
+                    $next_bed_number++; // 如果找到的是已分配的床位，繼續找下一個
+                }
+
+                if ($next_bed_number > $dormitory['capacity']) {
+                    if ($pdo->inTransaction()) {
+                        $pdo->rollBack();
+                    }
+                    echo "<script>
+                        alert('此房間已滿，請選擇其他房號。');
+                        window.location.href = 'apply_room.php';
+                    </script>";
+                    exit;
+
+                }
+
+                //插入新的分配記錄
+                $stmt = $pdo->prepare("INSERT INTO assignment (stu_ID, dorm_ID, building, bed_number)
+                                       VALUES (:stu_ID, :dorm_ID, :building, :bed_number)");
+                $stmt->execute([
+                    ':stu_ID' => $student_id_input,
+                    ':dorm_ID' => $dormitory['dorm_ID'],
+                    ':building' => $dormitory['building'],
+                    ':bed_number' => $next_bed_number
+                ]);;
+
+                $pdo->commit(); // 提交事務
+
+                $message = "房間申請成功！您的床位號是: " . $next_bed_number;
             }
-
-            if ($next_bed_number > $dormitory['capacity']) {
-                $message = "此宿舍已滿，沒有空床位。";
-                $pdo->rollBack();
-                return;
-            }
-
-            // 3. 插入新的分配記錄
-            $stmt = $pdo->prepare("INSERT INTO assignment (stu_ID, dorm_ID, building, bed_number) VALUES (:stu_id, :dorm_id, :building_name, :bed_number)");
-            $stmt->execute([
-                ':stu_id' => $student_id_input,
-                ':dorm_id' => $dormitory['dorm_ID'],
-                ':building_name' => $dormitory['building'],
-                ':bed_number' => $next_bed_number
-            ]);
-
-            // 4. 可選：插入或更新 lifestyle 資訊 (根據您的需求)
-            // 這裡假設學生申請房間時不會輸入 lifestyle 資訊，如果需要，請在此處添加表單欄位和插入/更新邏輯
-            // 例如：
-            // $bedtime_input = $_POST['bedtime'] ?? NULL;
-            // $ac_temp_input = $_POST['ac_temperature'] ?? NULL;
-            // ...
-            // $stmt = $pdo->prepare("INSERT INTO lifestyle (stu_ID, bedtime, AC_temperature, hygieneLevel, noiseSensitivity) VALUES (:stu_id, :bedtime, :ac_temp, :hygiene, :noise) ON DUPLICATE KEY UPDATE bedtime = VALUES(bedtime), AC_temperature = VALUES(AC_temperature), hygieneLevel = VALUES(hygieneLevel), noiseSensitivity = VALUES(noiseSensitivity)");
-            // $stmt->execute([...]);
-
-            $pdo->commit(); // 提交事務
-            $message = "房間申請成功！您的床位號是: " . $next_bed_number;
 
         } catch (\PDOException $e) {
-            $pdo->rollBack(); // 如果發生錯誤，回滾事務
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }// 如果發生錯誤，回滾事務
             $message = "申請失敗：" . $e->getMessage();
             error_log("Apply Room Error: " . $e->getMessage()); // 記錄錯誤到伺服器日誌
         }
+
     }
 }
 ?>
@@ -179,48 +292,40 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['apply_room'])) {
             <div class="form-section">
                 <form action="apply_room.php" method="POST">
                     <h2>申請宿舍</h2>
-                    <div class="form-group">
-                        <label for="dorm_id">Dorm ID:</label>
-                        <input type="number" name="dorm_id" id="dorm_id" required>
-                    </div>
+                    <!-- 棟別 -->
                     <div class="form-group">
                         <label for="building">Building:</label>
-                        <input type="text" name="building" id="building" required>
+                        <select name="building" id="building" required>
+                            <option value="">請選擇棟別</option>
+                            <?php foreach ($buildings as $building): ?>
+                                <option value="<?= htmlspecialchars($building) ?>"><?= htmlspecialchars($building) ?></option>
+                            <?php endforeach; ?>
+                        </select>
                     </div>
-                    <hr style="margin: 20px 0;">
-                    <h2>學生資訊</h2>
+
+                    <!-- 房號 -->
                     <div class="form-group">
-                        <label for="stu_id">Student ID:</label>
-                        <input type="number" name="stu_id" id="stu_id" required>
+                        <label for="dorm_ID">Room Number:</label>
+                        <input type="number" name="dorm_ID" id="dorm_ID" required>
                     </div>
+
+
+                    <!-- 學號 -->
+                    <div class="form-group">
+                        <label for="stu_ID">Student ID:</label>
+                        <input type="number" name="stu_ID" id="stu_ID" required>
+                    </div>
+
+                    <!-- 姓名 -->
                     <div class="form-group">
                         <label for="name">Name:</label>
                         <input type="text" name="name" id="name" required>
                     </div>
-                    <div class="form-group">
-                        <label for="gender">Gender:</label>
-                        <select name="gender" id="gender" required>
-                            <option value="">請選擇</option>
-                            <option value="M">男</option>
-                            <option value="F">女</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label for="department">Department (Optional):</label>
-                        <input type="text" name="department" id="department">
-                    </div>
-                    <div class="form-group">
-                        <label for="grade">Grade (Optional):</label>
-                        <input type="number" name="grade" id="grade">
-                    </div>
-                    <div class="form-group">
-                        <label for="budget">Budget (Optional):</label>
-                        <input type="number" name="budget" id="budget">
-                    </div>
-                    <!-- 生活習慣資訊 (Lifestyle) 暫不在此處收集，若有需要請自行添加 -->
+
                     <div class="form-group">
                         <button type="submit" name="apply_room">Apply</button>
                     </div>
+
                 </form>
             </div>
 
@@ -232,5 +337,20 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['apply_room'])) {
 
         </div>
     </div>
+    <?php if (!empty($should_reset) && $should_reset): ?>
+<script>
+// 顯示 alert 訊息
+alert("此學生已經被分配宿舍，請勿重複申請。");
+
+// 清空所有 input 和 select 欄位
+document.addEventListener("DOMContentLoaded", function () {
+    const form = document.querySelector("form");
+    if (form) {
+        form.reset();
+    }
+});
+</script>
+<?php endif; ?>
+
 </body>
 </html>
