@@ -9,6 +9,47 @@ $roommate_info = []; // 用於儲存室友的資訊
 $message = '';
 $display_results = false; // 控制是否顯示搜尋結果區塊
 
+if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['cancel_application'])) {
+    $stu_ID_to_cancel = $_POST['stu_id_to_cancel'] ?? ''; // 從隱藏欄位獲取學生ID
+
+    if (!empty($stu_ID_to_cancel)) {
+        try {
+            // 檢查該學生是否有申請記錄 (assignment 表中是否有資料)
+            $check_sql = "SELECT COUNT(*) FROM assignment WHERE stu_ID = :stu_ID";
+            $check_stmt = $pdo->prepare($check_sql);
+            $check_stmt->bindParam(':stu_ID', $stu_ID_to_cancel, PDO::PARAM_INT);
+            $check_stmt->execute();
+            $count = $check_stmt->fetchColumn();
+
+            if ($count > 0) {
+                // 執行刪除 assignment 表中的記錄
+                $delete_sql = "DELETE FROM assignment WHERE stu_ID = :stu_ID";
+                $delete_stmt = $pdo->prepare($delete_sql);
+                $delete_stmt->bindParam(':stu_ID', $stu_ID_to_cancel, PDO::PARAM_INT);
+                $delete_stmt->execute();
+
+                $message = "Room application for Student ID " . htmlspecialchars($stu_ID_to_cancel) . " has been successfully cancelled.";
+
+                // 可選：取消後清除顯示的學生資訊，讓用戶重新搜尋
+                $current_student_info = [];
+                $roommate_info = [];
+                $display_results = false;
+                $student_id_filter = ''; // 清空篩選條件，避免再次顯示
+                $student_name_filter = '';
+
+            } else {
+                $message = "Student ID " . htmlspecialchars($stu_ID_to_cancel) . " does not have any room application to cancel.";
+            }
+
+        } catch (\PDOException $e) {
+            $message = "Error cancelling application: " . $e->getMessage();
+            error_log("Cancel Application Error: " . $e->getMessage());
+        }
+    } else {
+        $message = "Invalid student ID provided for cancellation.";
+    }
+}
+
 if ($_SERVER['REQUEST_METHOD'] == 'GET' && isset($_GET['search_student'])) {
     $student_id_filter = $_GET['stu_id'] ?? '';
     $student_name_filter = $_GET['name'] ?? '';
@@ -208,10 +249,22 @@ if ($_SERVER['REQUEST_METHOD'] == 'GET' && isset($_GET['search_student'])) {
                         <div><label>Noise Sensitivity :</label><span><?php echo htmlspecialchars($current_student_info['noiseSensitivity'] ?? 'N/A'); ?></span></div>
                     </div>
 
-                    <form action="update_lifestyle.php" method="GET">
-                        <input type="hidden" name="stu_id" value="<?php echo htmlspecialchars($current_student_info['stu_ID']); ?>">
-                        <button type="submit" class="update-button">Update Life Style</button>
-                    </form>
+                    <div style="margin-top: 15px; text-align: center;">
+                        <form action="update_lifestyle.php" method="GET" style="display: inline-block; margin-right: 10px;">
+                            <input type="hidden" name="stu_id" value="<?php echo htmlspecialchars($current_student_info['stu_ID'] ?? ''); ?>">
+                            <button type="submit" class="update-button">Update Life Style</button>
+                        </form>
+
+                        <?php if (!empty($current_student_info['dorm_ID'])): // 只有當學生有宿舍時才顯示取消按鈕 ?>
+                            <form action="search_student.php" method="POST" style="display: inline-block;">
+                                <input type="hidden" name="stu_id_to_cancel" value="<?php echo htmlspecialchars($current_student_info['stu_ID'] ?? ''); ?>">
+                                <button type="submit" name="cancel_application" class="update-button" style="background-color: #dc3545;"
+                                    onclick="return confirm('Are you sure you want to cancel the room application for <?php echo htmlspecialchars($current_student_info['name'] ?? ''); ?> (ID: <?php echo htmlspecialchars($current_student_info['stu_ID'] ?? ''); ?>)? This action cannot be undone.')">
+                                    Cancel Room Application
+                                </button>
+                            </form>
+                        <?php endif; ?>
+                    </div>
 
                     <div class="info-separator"></div>
 
